@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import FastAPI, Response, status, HTTPException ,Depends
+from fastapi import FastAPI, Response, status, HTTPException, Depends
 from pydantic import BaseModel
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -9,7 +9,6 @@ from . import models
 from .database import engine, Session, get_db
 
 models.Base.metadata.create_all(bind=engine)
-
 
 app = FastAPI()
 while True:
@@ -35,12 +34,10 @@ def root():
 
 
 @app.get("/get/{Id}")
-def get_posts(Id: int):
-    try:
-        cur.execute(f"SELECT * FROM POSTS WHERE ID ={Id} ;")
-        post = cur.fetchall()
-        return post
-    except Exception:
+def get_posts(Id: int, db: Session = Depends(get_db)):
+    post = db.query(models.Posts).filter(models.Posts.id == Id).first()
+
+    if not post:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"post with id {Id} not found")
 
 
@@ -51,40 +48,45 @@ class Post(BaseModel):
 
 
 @app.post("/posts")
-def Create_posts(post: Post):
-    cur.execute("""INSERT INTO POSTS(title,content,published) VALUES( %s,%s,%s) RETURNING * """, (post.title,
-                                                                                                  post.content,
-                                                                                                  post.published))
-    content = cur.fetchone()
-    conn.commit()
-    return {"data": content}
+def Create_posts(post: Post, db: Session = Depends(get_db)):
+    # new_post = models.Posts(title=post.title, content=post.content, published=post.published) is same as below
+    new_post = models.Posts(**post.dict())  # ** unpacks the dict
+    # It automatically takes the fields as a dict and then unpacks it to get the necessary result
+    db.add(new_post)
+    db.commit()
+    db.refresh(new_post)
+    return {"data": new_post}
 
 
 @app.delete("/posts/{Id}", status_code=status.HTTP_204_NO_CONTENT)
-def Delete_post(Id: int):
-    cur.execute("""DELETE FROM POSTS WHERE ID = %s RETURNING *""", (str(Id),))
-    deleted_post = cur.fetchone()
-    conn.commit()
+def Delete_post(Id: int, db: Session = Depends(get_db)):
+    post_query = db.query(models.Posts).filter(models.Posts.id == Id)
 
-    if deleted_post is None:
+    if post_query.first() is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Deleted post {Id} does not exist")
-
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    post_query.delete(synchronize_session=False)
+    db.commit()
 
 
 @app.put("/posts/{Id}")
-def Update_post(Id: int, post: Post):
-    cur.execute("""UPDATE POSTS SET title = %s,content = %s,published  = %s WHERE Id= %s RETURNING *""", (post.title,
-                                                                                                          post.content,
-                                                                                                          post.published,
-                                                                                                          str(Id)))
-    update = cur.fetchone()
-    conn.commit()
+def Update_post(Id: int, post: Post, db: Session = Depends(get_db)):
 
-    if update is None:
+    # cur.execute("""UPDATE POSTS SET title = %s,content = %s,published  = %s WHERE Id= %s RETURNING *""", (post.title,
+    #                                                                                                     post.content,
+    #                                                                                                    post.published,
+    #                                                                                                   str(Id)))
+
+    post_query = db.query(models.Posts).filter(models.Posts.id == Id)
+    posts = post_query.first()
+
+    if posts is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Deleted post {Id} does not exist")
 
-    return {"data": update}
+    post_query.update(post.dict(), synchronize_session=False)
+    db.commit()
+
+    return {"data": post_query.first()}
+
 
 @app.get("/alchemy")
 def alc(db: Session = Depends(get_db)):
